@@ -1,0 +1,10 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Remove Kali VM
+Comment=Delete the packaged Kali Linux virtual machine runtime data
+Exec=omarchy-kali-vm-desktop-launch remove
+Icon=omarchy-kali-vm
+Terminal=false
+Categories=System;Security;Utility;
+Keywords=kali;virtual machine;vm;remove;

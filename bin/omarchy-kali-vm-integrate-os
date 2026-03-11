@@ -1,0 +1,52 @@
+#!/bin/bash
+set -euo pipefail
+
+CONFIG_ROOT="${XDG_CONFIG_HOME:-$HOME/.config}"
+PROJECT_ROOT="$CONFIG_ROOT/omarchy-kali-vm"
+MENU_TEMPLATE="${OMARCHY_KALI_VM_DATA_DIR:-/usr/share/omarchy-kali-vm}/omarchy-menu.sh"
+HYPR_TEMPLATE="${OMARCHY_KALI_VM_DATA_DIR:-/usr/share/omarchy-kali-vm}/hypr/omarchy-kali-vm.conf"
+MENU_TARGET="$PROJECT_ROOT/menu.sh"
+HYPR_TARGET_DIR="$PROJECT_ROOT/hypr"
+HYPR_TARGET="$HYPR_TARGET_DIR/omarchy-kali-vm.conf"
+OMARCHY_MENU="$CONFIG_ROOT/omarchy/extensions/menu.sh"
+HYPRLAND_CONF="$CONFIG_ROOT/hypr/hyprland.conf"
+MENU_MARKER_BEGIN="# >>> omarchy-kali-vm menu integration >>>"
+MENU_MARKER_END="# <<< omarchy-kali-vm menu integration <<<"
+HYPR_MARKER_BEGIN="# >>> omarchy-kali-vm hypr integration >>>"
+HYPR_MARKER_END="# <<< omarchy-kali-vm hypr integration <<<"
+
+append_marker_block() {
+  local file="$1"
+  local begin="$2"
+  local end="$3"
+  local body="$4"
+
+  mkdir -p "$(dirname "$file")"
+  touch "$file"
+  if grep -Fqx "$begin" "$file"; then
+    return 0
+  fi
+
+  {
+    printf '\n%s\n' "$begin"
+    printf '%s\n' "$body"
+    printf '%s\n' "$end"
+  } >> "$file"
+}
+
+install -Dm644 "$MENU_TEMPLATE" "$MENU_TARGET"
+install -Dm644 "$HYPR_TEMPLATE" "$HYPR_TARGET"
+
+append_marker_block \
+  "$OMARCHY_MENU" \
+  "$MENU_MARKER_BEGIN" \
+  "$MENU_MARKER_END" \
+  "source \"$MENU_TARGET\""
+
+append_marker_block \
+  "$HYPRLAND_CONF" \
+  "$HYPR_MARKER_BEGIN" \
+  "$HYPR_MARKER_END" \
+  "source = $HYPR_TARGET"
+
+printf 'Installed Omarchy integration in %s\n' "$CONFIG_ROOT"

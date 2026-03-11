@@ -1,0 +1,10 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Kali
+Comment=Launch the packaged Kali Linux virtual machine
+Exec=omarchy-kali-vm launch
+Icon=omarchy-kali-vm
+Terminal=false
+Categories=System;Security;Utility;
+Keywords=kali;virtual machine;vm;security;

@@ -1,0 +1,33 @@
+#!/bin/bash
+set -euo pipefail
+
+CONFIG_ROOT="${XDG_CONFIG_HOME:-$HOME/.config}"
+PROJECT_ROOT="$CONFIG_ROOT/omarchy-kali-vm"
+OMARCHY_MENU="$CONFIG_ROOT/omarchy/extensions/menu.sh"
+HYPRLAND_CONF="$CONFIG_ROOT/hypr/hyprland.conf"
+MENU_MARKER_BEGIN="# >>> omarchy-kali-vm menu integration >>>"
+MENU_MARKER_END="# <<< omarchy-kali-vm menu integration <<<"
+HYPR_MARKER_BEGIN="# >>> omarchy-kali-vm hypr integration >>>"
+HYPR_MARKER_END="# <<< omarchy-kali-vm hypr integration <<<"
+
+remove_marker_block() {
+  local file="$1"
+  local begin="$2"
+  local end="$3"
+
+  [[ -f "$file" ]] || return 0
+
+  awk -v begin="$begin" -v end="$end" '
+    $0 == begin { skip=1; next }
+    $0 == end { skip=0; next }
+    skip != 1 { print }
+  ' "$file" > "$file.tmp"
+
+  mv "$file.tmp" "$file"
+}
+
+remove_marker_block "$OMARCHY_MENU" "$MENU_MARKER_BEGIN" "$MENU_MARKER_END"
+remove_marker_block "$HYPRLAND_CONF" "$HYPR_MARKER_BEGIN" "$HYPR_MARKER_END"
+rm -rf "$PROJECT_ROOT"
+
+printf 'Removed Omarchy integration managed by omarchy-kali-vm from %s\n' "$CONFIG_ROOT"

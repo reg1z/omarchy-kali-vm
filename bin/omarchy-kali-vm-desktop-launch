@@ -1,0 +1,36 @@
+#!/bin/bash
+set -euo pipefail
+
+if [[ $# -lt 1 ]]; then
+  echo "Usage: omarchy-kali-vm-desktop-launch <subcommand> [args...]" >&2
+  exit 1
+fi
+
+if command -v omarchy-launch-floating-terminal-with-presentation >/dev/null 2>&1; then
+  exec omarchy-launch-floating-terminal-with-presentation "omarchy-kali-vm $*"
+fi
+
+if command -v xdg-terminal-exec >/dev/null 2>&1; then
+  exec xdg-terminal-exec omarchy-kali-vm "$@"
+fi
+
+for terminal in kitty alacritty ghostty foot wezterm gnome-terminal konsole xterm; do
+  if ! command -v "$terminal" >/dev/null 2>&1; then
+    continue
+  fi
+
+  case "$terminal" in
+    kitty|alacritty|ghostty|foot|wezterm|xterm)
+      exec "$terminal" -e omarchy-kali-vm "$@"
+      ;;
+    gnome-terminal)
+      exec gnome-terminal -- omarchy-kali-vm "$@"
+      ;;
+    konsole)
+      exec konsole -e omarchy-kali-vm "$@"
+      ;;
+  esac
+done
+
+echo "No supported terminal launcher found." >&2
+exit 1
