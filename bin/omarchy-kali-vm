@@ -690,6 +690,7 @@ if [[ "$NEW_USERNAME" != "kali" ]]; then
 fi
 
 HOME_DIR="$MNT/home/$NEW_USERNAME"
+GUEST_SHARED_MOUNT="$HOME_DIR/Kali"
 
 # --- Ensure configured user keeps sudo access ---
 mkdir -p "$MNT/etc/sudoers.d"
@@ -697,6 +698,11 @@ cat > "$MNT/etc/sudoers.d/90-omarchy-kali-user" << EOF
 $NEW_USERNAME ALL=(ALL:ALL) ALL
 EOF
 chmod 440 "$MNT/etc/sudoers.d/90-omarchy-kali-user"
+
+# --- Host shared folder mount ---
+mkdir -p "$GUEST_SHARED_MOUNT"
+sed -i '\|[[:space:]]/home/[^[:space:]]\+/Kali[[:space:]]\+9p[[:space:]]|d' "$MNT/etc/fstab"
+printf 'shared /home/%s/Kali 9p trans=virtio,version=9p2000.L,rw,nofail,x-systemd.automount,_netdev 0 0\n' "$NEW_USERNAME" >> "$MNT/etc/fstab"
 
 # --- XFCE session file ---
 echo "xfce4-session" > "$HOME_DIR/.xsession"
@@ -800,6 +806,7 @@ DESKTOPFILE
 uid=$(grep "^${NEW_USERNAME}:" "$MNT/etc/passwd" | cut -d: -f3)
 gid=$(grep "^${NEW_USERNAME}:" "$MNT/etc/passwd" | cut -d: -f4)
 chown "${uid}:${gid}" "$HOME_DIR/.xsession"
+chown "${uid}:${gid}" "$GUEST_SHARED_MOUNT"
 chown -R "${uid}:${gid}" "$HOME_DIR/.config"
 
 # --- Cleanup nbd (unmount + disconnect happen via EXIT trap) ---
@@ -1265,6 +1272,7 @@ EOF
   echo ""
   echo "Kali VM installed! Launching..."
   echo "Closing the viewer will power down the VM by default."
+  echo "The host shared folder ~/Kali will be mounted inside Kali at ~/Kali."
   # Launch viewer detached so the install terminal can close immediately.
   # Uses a wrapper subshell (not bare setsid) so that when the viewer window
   # is closed, the container is stopped — matching launch_kali's default behavior.
