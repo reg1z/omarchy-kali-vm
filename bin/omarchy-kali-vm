@@ -2,11 +2,264 @@
 set -euo pipefail
 
 CONFIG_ROOT="${XDG_CONFIG_HOME:-$HOME/.config}"
+DATA_ROOT="${XDG_DATA_HOME:-$HOME/.local/share}"
+STATE_ROOT="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy-kali-vm"
 COMPOSE_FILE="$CONFIG_ROOT/kali/docker-compose.yml"
 KALI_CONFIG_DIR="$CONFIG_ROOT/kali"
 KALI_STORAGE="$HOME/.kali"
 KALI_SHARED_DIR="$HOME/Kali"
 CONTAINER_NAME="${OMARCHY_KALI_VM_CONTAINER_NAME:-omarchy-kali-vm}"
+USER_APPLICATIONS_DIR="$DATA_ROOT/applications"
+RUNTIME_DESKTOP_FILE="$USER_APPLICATIONS_DIR/omarchy-kali-vm.desktop"
+
+DEBUG_MODE=false
+DEBUG_SUBCOMMAND=""
+DEBUG_REPORT_DIR=""
+DEBUG_STAGE="setup"
+DEBUG_STATUS="pending"
+DEBUG_MESSAGE=""
+DEBUG_IMAGE_ACTION="not-applicable"
+DEBUG_PRESERVED_ARTIFACTS=()
+DEBUG_URLS=()
+
+record_debug_url() {
+  local url="$1"
+
+  if [[ "$DEBUG_MODE" != true ]] || [[ -z "$url" ]]; then
+    return 0
+  fi
+
+  DEBUG_URLS+=("$url")
+}
+
+record_preserved_artifact() {
+  local artifact_path="$1"
+
+  if [[ "$DEBUG_MODE" != true ]] || [[ -z "$artifact_path" ]]; then
+    return 0
+  fi
+
+  DEBUG_PRESERVED_ARTIFACTS+=("$artifact_path")
+}
+
+ensure_debug_report_dir() {
+  if [[ "$DEBUG_MODE" != true ]] || [[ -n "$DEBUG_REPORT_DIR" ]]; then
+    return 0
+  fi
+
+  local timestamp
+  timestamp=$(date -u +%Y%m%dT%H%M%SZ)
+  DEBUG_REPORT_DIR="$STATE_ROOT/${DEBUG_SUBCOMMAND}-${timestamp}"
+  mkdir -p "$DEBUG_REPORT_DIR"
+}
+
+write_debug_report() {
+  if [[ "$DEBUG_MODE" != true ]]; then
+    return 0
+  fi
+
+  ensure_debug_report_dir
+
+  {
+    printf 'subcommand: %s\n' "$DEBUG_SUBCOMMAND"
+    printf 'debug: true\n'
+    printf 'timestamp: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    printf 'status: %s\n' "$DEBUG_STATUS"
+    printf 'stage: %s\n' "$DEBUG_STAGE"
+    printf 'message: %s\n' "${DEBUG_MESSAGE:-none}"
+    printf 'report_dir: %s\n' "$DEBUG_REPORT_DIR"
+    printf 'compose_file: %s\n' "$COMPOSE_FILE"
+    printf 'config_dir: %s\n' "$KALI_CONFIG_DIR"
+    printf 'storage_dir: %s\n' "$KALI_STORAGE"
+    printf 'shared_dir: %s\n' "$KALI_SHARED_DIR"
+    printf 'runtime_launcher: %s\n' "$RUNTIME_DESKTOP_FILE"
+    printf 'docker_image_action: %s\n' "$DEBUG_IMAGE_ACTION"
+    printf '\nurls:\n'
+    if (( ${#DEBUG_URLS[@]} == 0 )); then
+      printf '  (none)\n'
+    else
+      printf '  %s\n' "${DEBUG_URLS[@]}"
+    fi
+    printf '\npreserved_artifacts:\n'
+    if (( ${#DEBUG_PRESERVED_ARTIFACTS[@]} == 0 )); then
+      printf '  (none)\n'
+    else
+      printf '  %s\n' "${DEBUG_PRESERVED_ARTIFACTS[@]}"
+    fi
+  } > "$DEBUG_REPORT_DIR/report.txt"
+}
+
+print_debug_summary() {
+  if [[ "$DEBUG_MODE" != true ]]; then
+    return 0
+  fi
+
+  echo "Debug report written to: $DEBUG_REPORT_DIR"
+  if (( ${#DEBUG_PRESERVED_ARTIFACTS[@]} > 0 )); then
+    echo "Preserved artifacts:"
+    printf '  %s\n' "${DEBUG_PRESERVED_ARTIFACTS[@]}"
+  fi
+}
+
+prepare_debug_run() {
+  local subcommand="$1"
+
+  DEBUG_MODE=true
+  DEBUG_SUBCOMMAND="$subcommand"
+  DEBUG_REPORT_DIR=""
+  DEBUG_STAGE="setup"
+  DEBUG_STATUS="running"
+  DEBUG_MESSAGE=""
+  DEBUG_IMAGE_ACTION="not-applicable"
+  DEBUG_PRESERVED_ARTIFACTS=()
+  DEBUG_URLS=()
+
+  ensure_debug_report_dir
+  echo "Debug mode enabled."
+  echo "Reports will be written under: $DEBUG_REPORT_DIR"
+}
+
+capture_debug_sidecar() {
+  local source_path="$1"
+  local dest_name="$2"
+
+  if [[ "$DEBUG_MODE" != true ]] || [[ ! -f "$source_path" ]]; then
+    return 0
+  fi
+
+  ensure_debug_report_dir
+  cp -f "$source_path" "$DEBUG_REPORT_DIR/$dest_name"
+  record_preserved_artifact "$DEBUG_REPORT_DIR/$dest_name"
+}
+
+snapshot_archive_stats() {
+  local archive_glob="$1"
+  local archive_path
+  local archive_paths=()
+
+  if [[ "$DEBUG_MODE" != true ]]; then
+    return 0
+  fi
+
+  ensure_debug_report_dir
+  : > "$DEBUG_REPORT_DIR/archive.stat"
+  mapfile -t archive_paths < <(compgen -G "$archive_glob" || true)
+  for archive_path in "${archive_paths[@]}"; do
+    printf '%s\t%s bytes\n' "$archive_path" "$(stat -c%s "$archive_path" 2>/dev/null || echo unknown)" >> "$DEBUG_REPORT_DIR/archive.stat"
+  done
+
+  if [[ -s "$DEBUG_REPORT_DIR/archive.stat" ]]; then
+    record_preserved_artifact "$DEBUG_REPORT_DIR/archive.stat"
+  else
+    rm -f "$DEBUG_REPORT_DIR/archive.stat"
+  fi
+}
+
+preserve_install_debug_artifacts() {
+  local archive_path
+
+  if [[ "$DEBUG_MODE" != true ]]; then
+    return 0
+  fi
+
+  shopt -s nullglob
+  for archive_path in "$KALI_STORAGE"/*.7z; do
+    record_preserved_artifact "$archive_path"
+  done
+  shopt -u nullglob
+
+  capture_debug_sidecar "$KALI_STORAGE/SHA256SUMS" "SHA256SUMS"
+  capture_debug_sidecar "$KALI_STORAGE/SHA256SUMS.gpg" "SHA256SUMS.gpg"
+  snapshot_archive_stats "$KALI_STORAGE/*.7z"
+}
+
+fail_install() {
+  local stage="$1"
+  local message="$2"
+
+  DEBUG_STAGE="$stage"
+  DEBUG_STATUS="failed"
+  DEBUG_MESSAGE="$message"
+  preserve_install_debug_artifacts
+  write_debug_report
+  echo "ERROR: $message"
+  print_debug_summary
+  exit 1
+}
+
+preserve_remove_debug_artifacts() {
+  local archive_path
+  local archive_name
+
+  if [[ "$DEBUG_MODE" != true ]]; then
+    return 0
+  fi
+
+  shopt -s nullglob
+  for archive_path in "$KALI_STORAGE"/*.7z; do
+    archive_name=$(basename "$archive_path")
+    mv "$archive_path" "$DEBUG_REPORT_DIR/$archive_name"
+    record_preserved_artifact "$DEBUG_REPORT_DIR/$archive_name"
+  done
+  shopt -u nullglob
+  snapshot_archive_stats "$DEBUG_REPORT_DIR/*.7z"
+}
+
+refresh_desktop_database() {
+  if ! command -v update-desktop-database >/dev/null 2>&1; then
+    return 0
+  fi
+
+  update-desktop-database "$USER_APPLICATIONS_DIR" >/dev/null 2>&1 || true
+}
+
+write_runtime_launcher() {
+  mkdir -p "$USER_APPLICATIONS_DIR"
+
+  cat > "$RUNTIME_DESKTOP_FILE" << 'EOF'
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Kali
+Comment=Launch the packaged Kali Linux virtual machine
+Exec=omarchy-kali-vm launch
+Icon=omarchy-kali-vm
+Terminal=false
+Categories=System;Security;Utility;
+Keywords=kali;virtual machine;vm;security;
+EOF
+
+  refresh_desktop_database
+}
+
+remove_runtime_launcher() {
+  rm -f "$RUNTIME_DESKTOP_FILE"
+  refresh_desktop_database
+}
+
+parse_debug_flag() {
+  local subcommand="$1"
+  shift
+
+  DEBUG_MODE=false
+  if [[ $# -eq 0 ]]; then
+    return 0
+  fi
+
+  case "$1" in
+    --debug)
+      if [[ $# -ne 1 ]]; then
+        echo "Unknown option(s) for $subcommand: ${*:2}" >&2
+        exit 1
+      fi
+      prepare_debug_run "$subcommand"
+      ;;
+    *)
+      echo "Unknown option for $subcommand: $1" >&2
+      exit 1
+      ;;
+  esac
+}
 
 require_command() {
   local command_name="$1"
@@ -401,6 +654,14 @@ restart_spice_vdagent() {
   spice-vdagent >/dev/null 2>&1 &
 }
 
+reload_xfce_desktop() {
+  if ! command -v xfdesktop >/dev/null 2>&1; then
+    return
+  fi
+
+  xfdesktop --reload >/dev/null 2>&1 || true
+}
+
 while true; do
   OUTPUT=$(xrandr 2>/dev/null | awk '/ connected/ {print $1; exit}')
   PREFERRED=$(xrandr 2>/dev/null | awk '/connected/ {found=1; next} found && /+/ {print $1; exit}')
@@ -409,6 +670,7 @@ while true; do
     if [[ -n "$OUTPUT" ]]; then
       xrandr --output "$OUTPUT" --auto 2>/dev/null
     fi
+    reload_xfce_desktop
     restart_spice_vdagent
   fi
   sleep 1
@@ -485,6 +747,9 @@ download_kali_qcow2() {
     KALI_BASE_URL="https://cdimage.kali.org/kali-images/current"
     CURRENT_ARCHIVE=$(resolve_current_kali_qcow2_archive)
     if [[ -z "$CURRENT_ARCHIVE" ]]; then
+      if [[ "$DEBUG_MODE" = true ]]; then
+        fail_install "download" "Could not determine the latest current Kali QEMU archive."
+      fi
       echo "ERROR: Could not determine the latest current Kali QEMU archive."
       return 1
     fi
@@ -492,12 +757,17 @@ download_kali_qcow2() {
   fi
   DOWNLOAD_FILENAME="${KALI_URL##*/}"
   DOWNLOAD_FILE="$KALI_STORAGE/$DOWNLOAD_FILENAME"
+  record_debug_url "$KALI_URL"
 
   echo "Downloading Kali QCOW2 image ($SOURCE_LABEL)..."
   echo "URL: $KALI_URL"
 
   # Download the archive
+  DEBUG_STAGE="download"
   curl -fL --retry 2 --retry-delay 5 -C - -o "$DOWNLOAD_FILE" "$KALI_URL" || {
+    if [[ "$DEBUG_MODE" = true ]]; then
+      fail_install "download" "Failed to download Kali QCOW2 archive."
+    fi
     echo "ERROR: Failed to download Kali QCOW2 archive."
     rm -f "$DOWNLOAD_FILE"
     return 1
@@ -505,39 +775,60 @@ download_kali_qcow2() {
 
   # GPG-verify SHA256SUMS using a temporary keyring
   echo "Verifying download integrity..."
+  DEBUG_STAGE="verify"
   local GNUPG_TMP
   GNUPG_TMP=$(mktemp -d)
   curl -fsSL -o "$GNUPG_TMP/kali-key.asc" https://archive.kali.org/archive-key.asc || {
-    echo "ERROR: Failed to download Kali archive signing key."
     rm -rf "$GNUPG_TMP"
+    if [[ "$DEBUG_MODE" = true ]]; then
+      fail_install "verify" "Failed to download Kali archive signing key."
+    fi
+    echo "ERROR: Failed to download Kali archive signing key."
     rm -f "$DOWNLOAD_FILE"
     return 1
   }
+  record_debug_url "https://archive.kali.org/archive-key.asc"
   echo "Importing Kali archive signing key..."
   if ! gpg --homedir "$GNUPG_TMP" --import "$GNUPG_TMP/kali-key.asc"; then
-    echo "ERROR: Failed to import Kali archive signing key."
     rm -rf "$GNUPG_TMP"
+    if [[ "$DEBUG_MODE" = true ]]; then
+      fail_install "verify" "Failed to import Kali archive signing key."
+    fi
+    echo "ERROR: Failed to import Kali archive signing key."
     rm -f "$DOWNLOAD_FILE" "$KALI_STORAGE/SHA256SUMS" "$KALI_STORAGE/SHA256SUMS.gpg"
     return 1
   fi
 
   curl -fsSL -o "$KALI_STORAGE/SHA256SUMS" "${KALI_BASE_URL}/SHA256SUMS" || {
+    rm -rf "$GNUPG_TMP"
+    record_debug_url "${KALI_BASE_URL}/SHA256SUMS"
+    if [[ "$DEBUG_MODE" = true ]]; then
+      fail_install "verify" "Failed to download Kali checksum file."
+    fi
     echo "ERROR: Failed to download Kali checksum file."
-    rm -rf "$GNUPG_TMP"
     rm -f "$DOWNLOAD_FILE" "$KALI_STORAGE/SHA256SUMS" "$KALI_STORAGE/SHA256SUMS.gpg"
     return 1
   }
+  record_debug_url "${KALI_BASE_URL}/SHA256SUMS"
   curl -fsSL -o "$KALI_STORAGE/SHA256SUMS.gpg" "${KALI_BASE_URL}/SHA256SUMS.gpg" || {
-    echo "ERROR: Failed to download Kali checksum signature."
     rm -rf "$GNUPG_TMP"
+    record_debug_url "${KALI_BASE_URL}/SHA256SUMS.gpg"
+    if [[ "$DEBUG_MODE" = true ]]; then
+      fail_install "verify" "Failed to download Kali checksum signature."
+    fi
+    echo "ERROR: Failed to download Kali checksum signature."
     rm -f "$DOWNLOAD_FILE" "$KALI_STORAGE/SHA256SUMS" "$KALI_STORAGE/SHA256SUMS.gpg"
     return 1
   }
+  record_debug_url "${KALI_BASE_URL}/SHA256SUMS.gpg"
 
   echo "Verifying SHA256SUMS signature..."
   if ! gpg --homedir "$GNUPG_TMP" --verify "$KALI_STORAGE/SHA256SUMS.gpg" "$KALI_STORAGE/SHA256SUMS"; then
-    echo "ERROR: GPG signature verification failed! The checksum file may have been tampered with."
     rm -rf "$GNUPG_TMP"
+    if [[ "$DEBUG_MODE" = true ]]; then
+      fail_install "verify" "GPG signature verification failed. The checksum file may have been tampered with."
+    fi
+    echo "ERROR: GPG signature verification failed! The checksum file may have been tampered with."
     rm -f "$DOWNLOAD_FILE" "$KALI_STORAGE/SHA256SUMS" "$KALI_STORAGE/SHA256SUMS.gpg"
     return 1
   fi
@@ -548,6 +839,9 @@ download_kali_qcow2() {
   local EXPECTED_SUM ACTUAL_SUM
   EXPECTED_SUM=$(awk -v file="$DOWNLOAD_FILENAME" '$2 == file {print $1; exit}' "$KALI_STORAGE/SHA256SUMS")
   if [[ -z "$EXPECTED_SUM" ]]; then
+    if [[ "$DEBUG_MODE" = true ]]; then
+      fail_install "verify" "No checksum found for $DOWNLOAD_FILENAME in SHA256SUMS."
+    fi
     echo "ERROR: No checksum found for $DOWNLOAD_FILENAME in SHA256SUMS"
     rm -f "$DOWNLOAD_FILE" "$KALI_STORAGE/SHA256SUMS" "$KALI_STORAGE/SHA256SUMS.gpg"
     return 1
@@ -557,17 +851,23 @@ download_kali_qcow2() {
   echo "Expected SHA256: $EXPECTED_SUM"
   echo "Actual SHA256:   $ACTUAL_SUM"
   if [[ "$ACTUAL_SUM" != "$EXPECTED_SUM" ]]; then
+    if [[ "$DEBUG_MODE" = true ]]; then
+      fail_install "verify" "SHA256 checksum mismatch."
+    fi
     echo "ERROR: SHA256 checksum mismatch!"
     rm -f "$DOWNLOAD_FILE" "$KALI_STORAGE/SHA256SUMS" "$KALI_STORAGE/SHA256SUMS.gpg"
     return 1
   fi
   echo "SHA256 checksum verified."
-  rm -f "$KALI_STORAGE/SHA256SUMS" "$KALI_STORAGE/SHA256SUMS.gpg"
+  if [[ "$DEBUG_MODE" != true ]]; then
+    rm -f "$KALI_STORAGE/SHA256SUMS" "$KALI_STORAGE/SHA256SUMS.gpg"
+  fi
 
   # Extract the QCOW2 inside the qemux container so 7z is not required on the host.
   # Extraction itself is the final validation step here, so we avoid a redundant
   # full decompression pass via `7z t` first.
   echo "Extracting QCOW2 from 7z archive..."
+  DEBUG_STAGE="extract"
   docker run --rm \
     -v "$KALI_STORAGE:/storage" \
     --entrypoint /bin/bash \
@@ -578,6 +878,9 @@ download_kali_qcow2() {
       echo "Archive size: $(stat -c%s "$DOWNLOAD_FILE" 2>/dev/null || echo unknown) bytes"
       download_kali_qcow2 current
       return $?
+    fi
+    if [[ "$DEBUG_MODE" = true ]]; then
+      fail_install "extract" "Failed to extract QCOW2 archive."
     fi
     echo "ERROR: Failed to extract QCOW2 archive."
     echo "Archive: $DOWNLOAD_FILE"
@@ -590,6 +893,9 @@ download_kali_qcow2() {
   if [[ -n "$EXTRACTED" ]]; then
     mv "$EXTRACTED" "$QCOW2"
   else
+    if [[ "$DEBUG_MODE" = true ]]; then
+      fail_install "extract" "No QCOW2 file found after extraction."
+    fi
     echo "ERROR: No QCOW2 file found after extraction"
     rm -f "$DOWNLOAD_FILE"
     return 1
@@ -611,6 +917,8 @@ cleanup_stale_data_disk() {
 }
 
 install_kali() {
+  parse_debug_flag install "$@"
+
   # Set up trap to handle Ctrl+C
   trap "echo ''; echo 'Installation cancelled by user'; exit 1" INT
 
@@ -779,6 +1087,7 @@ EOF
   echo ""
 
   # Step 1: Download and verify the QCOW2 on the host
+  DEBUG_STAGE="download"
   if ! download_kali_qcow2; then
     echo "Failed to download Kali QCOW2 image!"
     exit 1
@@ -787,9 +1096,13 @@ EOF
   # Step 2: Configure the QCOW2 offline (credentials, XFCE, SPICE, etc.)
   if [[ ! -f "$KALI_STORAGE/.configured" ]]; then
     echo ""
+    DEBUG_STAGE="patch"
     if patch_qcow2 "$USERNAME" "$PASSWORD" "$SELECTED_DISK"; then
       touch "$KALI_STORAGE/.configured"
     else
+      if [[ "$DEBUG_MODE" = true ]]; then
+        fail_install "patch" "Failed to configure Kali image."
+      fi
       echo "Failed to configure Kali image."
       echo "You can retry by running: omarchy-kali-vm install"
       exit 1
@@ -802,7 +1115,11 @@ EOF
   echo ""
   echo "Starting Kali VM..."
   cleanup_stale_data_disk
+  DEBUG_STAGE="startup"
   if ! docker compose -f "$COMPOSE_FILE" up -d 2>&1; then
+    if [[ "$DEBUG_MODE" = true ]]; then
+      fail_install "startup" "Failed to start Kali VM."
+    fi
     echo "Failed to start Kali VM!"
     echo "   Common issues:"
     echo "   - Docker daemon not running: sudo systemctl start docker"
@@ -818,11 +1135,22 @@ EOF
     sleep 2
     WAIT_COUNT=$((WAIT_COUNT + 1))
     if (( WAIT_COUNT > 60 )); then
+      if [[ "$DEBUG_MODE" = true ]]; then
+        fail_install "startup" "Timeout waiting for Kali VM SPICE to become ready."
+      fi
       echo "Timeout: Kali VM SPICE not ready within 2 minutes"
       exit 1
     fi
   done
   docker exec "$CONTAINER_NAME" chmod 666 /storage/spice.sock
+  write_runtime_launcher
+
+  if [[ "$DEBUG_MODE" = true ]]; then
+    DEBUG_STATUS="succeeded"
+    DEBUG_MESSAGE="Install completed successfully."
+    write_debug_report
+    print_debug_summary
+  fi
 
   echo ""
   echo "Kali VM installed! Launching..."
@@ -845,6 +1173,7 @@ EOF
 }
 
 remove_kali() {
+  parse_debug_flag remove "$@"
   check_common_dependencies
 
   if ! gum confirm --default=false "Remove Kali VM and delete all associated data?"; then
@@ -853,14 +1182,29 @@ remove_kali() {
   fi
 
   echo "Removing Kali VM..."
+  DEBUG_STAGE="remove"
 
   docker compose -f "$COMPOSE_FILE" down 2>/dev/null || true
 
-  docker rmi qemux/qemu 2>/dev/null || echo "Image already removed or not found"
+  if [[ "$DEBUG_MODE" = true ]]; then
+    preserve_remove_debug_artifacts
+    DEBUG_IMAGE_ACTION="preserved"
+  else
+    docker rmi qemux/qemu 2>/dev/null || echo "Image already removed or not found"
+    DEBUG_IMAGE_ACTION="removed-if-present"
+  fi
 
   rm -rf "$KALI_CONFIG_DIR"
   rm -rf "$KALI_STORAGE"
   rm -rf "$KALI_SHARED_DIR"
+  remove_runtime_launcher
+
+  if [[ "$DEBUG_MODE" = true ]]; then
+    DEBUG_STATUS="succeeded"
+    DEBUG_MESSAGE="Remove completed with debug retention enabled."
+    write_debug_report
+    print_debug_summary
+  fi
 
   echo ""
   echo "Kali VM removal completed!"
@@ -1015,8 +1359,8 @@ show_usage() {
   echo "Usage: omarchy-kali-vm [command] [options]"
   echo ""
   echo "Commands:"
-  echo "  install              Install and configure Kali VM"
-  echo "  remove               Remove Kali VM and all its data"
+  echo "  install [--debug]    Install and configure Kali VM"
+  echo "  remove [--debug]     Remove Kali VM and all its data"
   echo "  launch [options]     Start Kali VM (if needed) and connect via SPICE"
   echo "                       Options:"
   echo "                         --keep-alive, -k   Keep VM running after viewer closes"
@@ -1026,8 +1370,10 @@ show_usage() {
   echo ""
   echo "Examples:"
   echo "  omarchy-kali-vm install           # Set up Kali VM for first time"
+  echo "  omarchy-kali-vm install --debug   # Keep install evidence and write a debug report"
   echo "  omarchy-kali-vm launch            # Connect to VM (auto-stop on exit)"
   echo "  omarchy-kali-vm launch -k         # Connect to VM (keep running)"
+  echo "  omarchy-kali-vm remove --debug    # Remove runtime state but preserve archives and image"
   echo "  omarchy-kali-vm stop              # Shut down the VM"
   echo ""
   echo "Optional Omarchy integration:"
@@ -1038,10 +1384,12 @@ show_usage() {
 # Main command dispatcher
 case "${1:-}" in
   install)
-    install_kali
+    shift
+    install_kali "$@"
     ;;
   remove)
-    remove_kali
+    shift
+    remove_kali "$@"
     ;;
   launch|start)
     launch_kali "${2:-}"
