@@ -1,14 +1,14 @@
 # Desktop Entries Vs Optional Omarchy Integration
 
-## Desktop Entries Only
+## Runtime Launcher
 
-The package installs three desktop entries:
+The package does not install default desktop entries for non-Omarchy use.
 
-- `Kali`
-- `Install Kali VM`
-- `Remove Kali VM`
+After `omarchy-kali-vm install` succeeds, the command creates a single user-owned launcher:
 
-For most users this is enough. The `Kali` launcher starts the VM directly and opens `remote-viewer` without spawning a terminal window first. Walker can discover these entries through its normal desktop application provider without any extra configuration.
+- `~/.local/share/applications/omarchy-kali-vm.desktop`
+
+That `Kali` launcher runs `omarchy-kali-vm launch` and is removed by `omarchy-kali-vm remove`. Until install completes, use the terminal commands directly.
 
 ## Optional Omarchy Integration
 
@@ -20,7 +20,7 @@ Omarchy users can run `omarchy-kali-vm-integrate-os` to add two user-owned integ
 This optional integration gives the smoothest Omarchy experience:
 
 - Hyprland window rules make the `remote-viewer` window behave correctly for the Kali session.
-- Omarchy menu integration gives you direct Install and Remove entries alongside the existing system flows.
+- Omarchy menu integration gives you direct Install and Remove entries alongside the existing system flows without relying on package-owned desktop files.
 
 The helper is idempotent. Re-running it does not duplicate menu entries or Hyprland sources.
 

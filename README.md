@@ -10,28 +10,30 @@ The implementation intentionally follows the Windows VM design pattern, but adap
 ### Scope
 The package does not edit `~/.local/share/omarchy` and does not clean up user dotfiles automatically on install or uninstall.
 
-- Base package: launcher command, desktop entries, icon, packaged Hyprland and Omarchy menu snippets, and documentation.
-- User runtime data: `~/.config/kali`, `~/.kali`, and `~/Kali`.
-- Optional Omarchy integration: user-run helpers that add or remove Omarchy menu and Hyprland sourcing under `~/.config`. The Hyprland window rules make the SPICE viewer behave like a native Omarchy app. Desktop entries work without Omarchy; Omarchy-specific menu and Hyprland integration is opt-in
+- Base package: launcher command, icon, packaged Hyprland and Omarchy menu snippets, and documentation.
+- User runtime data: `~/.config/kali`, `~/.kali`, `~/Kali`, and the runtime-created desktop entry in `~/.local/share/applications`.
+- Optional Omarchy integration: user-run helpers that add or remove Omarchy menu and Hyprland sourcing under `~/.config`. The Hyprland window rules make the SPICE viewer behave like a native Omarchy app. The runtime-created launcher works without Omarchy; Omarchy-specific menu and Hyprland integration is opt-in
 
 ### Patching the QEMU Image
 The QEMU Image is patched during initial setup to apply selected configurations, expand the virtual harddrive and filesystem. While patching, SPICE agent support is wired in so resize events propagate properly. XFCE was given a small autoresize helper that polls `xrandr`, applies the preferred mode when the display changes, and restarts the user-session `spice-vdagent` if needed. That extra guest-side step was necessary because XFCE was not reliably applying the new SPICE-provided resolution on its own, which in turn caused mouse alignment to break after resizes.
 
 ### Control Flow
-1. The user selects Kali from the install menu, which runs `omarchy-kali-vm install`.
+1. The user runs `omarchy-kali-vm install` from a terminal or an Omarchy-integrated menu entry. This is a first-time setup command and exits early if managed Kali VM state already exists.
 2. The script gathers VM resources and guest credentials from the user, writes the Kali compose config, and prepares local storage under `~/.kali`.
 3. It downloads the latest weekly Kali QEMU archive, verifies it cryptographically, extracts the QCOW2, and patches the image offline with the configured user/session changes. If something goes wrong with the weekly image, the script falls back to the latest current/stable Kali QEMU archive.
-4. It starts the VM through the `qemux/qemu` container, waits for the SPICE socket, and opens `remote-viewer`.
+4. It starts the VM through the `qemux/qemu` container, waits for the SPICE socket, writes a user-owned `Kali` desktop entry, and opens `remote-viewer`. By default, closing the viewer powers the VM down cleanly.
 5. Later launches reuse the same compose/storage setup and just start the VM and connect over SPICE.
-6. Removal is exposed through the remove menu and tears down the Kali VM state from the same entrypoint.
+6. Removal tears down the Kali VM state from the same entrypoint and removes the runtime-created launcher.
 
 ## Commands
 
 - `omarchy-kali-vm install`
+- `omarchy-kali-vm install --debug`
 - `omarchy-kali-vm launch`
 - `omarchy-kali-vm stop`
 - `omarchy-kali-vm status`
 - `omarchy-kali-vm remove`
+- `omarchy-kali-vm remove --debug`
 - `omarchy-kali-vm-integrate-os`
 - `omarchy-kali-vm-unintegrate-os`
 
@@ -40,6 +42,7 @@ For Omarchy users, `omarchy-kali-vm-integrate-os` enables the packaged Hyprland 
 ## Cleanup Boundaries
 
 - Remove Kali VM data: `omarchy-kali-vm remove`
+- Remove Kali VM data but preserve archives and debug evidence: `omarchy-kali-vm remove --debug`
 - Remove optional Omarchy integration: `omarchy-kali-vm-unintegrate-os`
 - Remove the package: `yay -R omarchy-kali-vm`
 
