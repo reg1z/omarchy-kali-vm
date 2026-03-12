@@ -237,6 +237,107 @@ remove_runtime_launcher() {
   refresh_desktop_database
 }
 
+list_managed_state_paths() {
+  printf '%s\n' \
+    "$KALI_CONFIG_DIR" \
+    "$COMPOSE_FILE" \
+    "$KALI_STORAGE" \
+    "$KALI_SHARED_DIR" \
+    "$RUNTIME_DESKTOP_FILE"
+}
+
+list_existing_managed_state_paths() {
+  local managed_path
+
+  while IFS= read -r managed_path; do
+    if [[ -e "$managed_path" ]]; then
+      printf '%s\n' "$managed_path"
+    fi
+  done < <(list_managed_state_paths)
+}
+
+managed_state_exists() {
+  local existing_state
+
+  while IFS= read -r existing_state; do
+    if [[ -n "$existing_state" ]]; then
+      return 0
+    fi
+  done < <(list_existing_managed_state_paths)
+
+  return 1
+}
+
+print_install_existing_state_error() {
+  local existing_state
+
+  echo "Existing managed Kali VM state detected."
+  echo "'omarchy-kali-vm install' only supports first-time setup."
+  echo "Remove the existing VM before reinstalling: omarchy-kali-vm remove"
+  echo ""
+  echo "Detected managed state:"
+  while IFS= read -r existing_state; do
+    printf '  %s\n' "$existing_state"
+  done < <(list_existing_managed_state_paths)
+}
+
+path_state_label() {
+  local managed_path="$1"
+
+  if [[ -e "$managed_path" ]]; then
+    printf 'present'
+  else
+    printf 'not present'
+  fi
+}
+
+print_remove_preview() {
+  echo "Managed Kali VM targets scheduled for deletion:"
+  printf '  Config directory: %s (%s)\n' "$KALI_CONFIG_DIR" "$(path_state_label "$KALI_CONFIG_DIR")"
+  printf '  Compose file:     %s (%s)\n' "$COMPOSE_FILE" "$(path_state_label "$COMPOSE_FILE")"
+  printf '  Storage directory:%s (%s)\n' " $KALI_STORAGE" "$(path_state_label "$KALI_STORAGE")"
+  printf '  Shared directory: %s (%s)\n' "$KALI_SHARED_DIR" "$(path_state_label "$KALI_SHARED_DIR")"
+  printf '  Runtime launcher: %s (%s)\n' "$RUNTIME_DESKTOP_FILE" "$(path_state_label "$RUNTIME_DESKTOP_FILE")"
+}
+
+docker_available() {
+  command -v docker >/dev/null 2>&1
+}
+
+docker_compose_available() {
+  docker_available && docker compose version >/dev/null 2>&1
+}
+
+best_effort_remove_docker_artifacts() {
+  if docker_compose_available; then
+    docker compose -f "$COMPOSE_FILE" down 2>/dev/null || echo "Warning: Docker Compose shutdown failed during removal; continuing."
+  elif docker_available; then
+    echo "Skipping Docker Compose shutdown during removal: docker compose is unavailable or Docker is not ready."
+  else
+    echo "Skipping Docker cleanup during removal: docker is unavailable."
+  fi
+
+  if [[ "$DEBUG_MODE" = true ]]; then
+    if docker_available; then
+      DEBUG_IMAGE_ACTION="preserved"
+    else
+      DEBUG_IMAGE_ACTION="preserved-docker-unavailable"
+    fi
+    return 0
+  fi
+
+  if docker_available; then
+    if docker rmi qemux/qemu 2>/dev/null; then
+      DEBUG_IMAGE_ACTION="removed-if-present"
+    else
+      echo "Skipping Docker image removal during removal: image is unavailable or Docker is not ready."
+      DEBUG_IMAGE_ACTION="remove-attempted"
+    fi
+  else
+    DEBUG_IMAGE_ACTION="skipped-docker-unavailable"
+  fi
+}
+
 parse_debug_flag() {
   local subcommand="$1"
   shift
@@ -291,6 +392,10 @@ check_common_dependencies() {
   require_command gum gum
   require_command sudo sudo
   require_compose
+}
+
+check_remove_dependencies() {
+  require_command gum gum
 }
 
 check_install_dependencies() {
@@ -922,6 +1027,11 @@ install_kali() {
   # Set up trap to handle Ctrl+C
   trap "echo ''; echo 'Installation cancelled by user'; exit 1" INT
 
+  if managed_state_exists; then
+    print_install_existing_state_error
+    exit 1
+  fi
+
   check_install_dependencies
   check_prerequisites
 
@@ -1154,6 +1264,7 @@ EOF
 
   echo ""
   echo "Kali VM installed! Launching..."
+  echo "Closing the viewer will power down the VM by default."
   # Launch viewer detached so the install terminal can close immediately.
   # Uses a wrapper subshell (not bare setsid) so that when the viewer window
   # is closed, the container is stopped — matching launch_kali's default behavior.
@@ -1174,7 +1285,9 @@ EOF
 
 remove_kali() {
   parse_debug_flag remove "$@"
-  check_common_dependencies
+  check_remove_dependencies
+
+  print_remove_preview
 
   if ! gum confirm --default=false "Remove Kali VM and delete all associated data?"; then
     echo "Removal cancelled by user"
@@ -1184,14 +1297,10 @@ remove_kali() {
   echo "Removing Kali VM..."
   DEBUG_STAGE="remove"
 
-  docker compose -f "$COMPOSE_FILE" down 2>/dev/null || true
+  best_effort_remove_docker_artifacts
 
   if [[ "$DEBUG_MODE" = true ]]; then
     preserve_remove_debug_artifacts
-    DEBUG_IMAGE_ACTION="preserved"
-  else
-    docker rmi qemux/qemu 2>/dev/null || echo "Image already removed or not found"
-    DEBUG_IMAGE_ACTION="removed-if-present"
   fi
 
   rm -rf "$KALI_CONFIG_DIR"
@@ -1359,7 +1468,7 @@ show_usage() {
   echo "Usage: omarchy-kali-vm [command] [options]"
   echo ""
   echo "Commands:"
-  echo "  install [--debug]    Install and configure Kali VM"
+  echo "  install [--debug]    Install and configure Kali VM (first-time setup only)"
   echo "  remove [--debug]     Remove Kali VM and all its data"
   echo "  launch [options]     Start Kali VM (if needed) and connect via SPICE"
   echo "                       Options:"
@@ -1376,37 +1485,43 @@ show_usage() {
   echo "  omarchy-kali-vm remove --debug    # Remove runtime state but preserve archives and image"
   echo "  omarchy-kali-vm stop              # Shut down the VM"
   echo ""
+  echo "Notes:"
+  echo "  install will exit if managed Kali VM state already exists."
+  echo "  Closing the viewer powers down the VM by default."
+  echo ""
   echo "Optional Omarchy integration:"
   echo "  omarchy-kali-vm-integrate-os"
   echo "  omarchy-kali-vm-unintegrate-os"
 }
 
-# Main command dispatcher
-case "${1:-}" in
-  install)
-    shift
-    install_kali "$@"
-    ;;
-  remove)
-    shift
-    remove_kali "$@"
-    ;;
-  launch|start)
-    launch_kali "${2:-}"
-    ;;
-  stop|down)
-    stop_kali
-    ;;
-  status)
-    status_kali
-    ;;
-  help|--help|-h|"")
-    show_usage
-    ;;
-  *)
-    echo "Unknown command: $1" >&2
-    echo "" >&2
-    show_usage >&2
-    exit 1
-    ;;
-esac
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  # Main command dispatcher
+  case "${1:-}" in
+    install)
+      shift
+      install_kali "$@"
+      ;;
+    remove)
+      shift
+      remove_kali "$@"
+      ;;
+    launch|start)
+      launch_kali "${2:-}"
+      ;;
+    stop|down)
+      stop_kali
+      ;;
+    status)
+      status_kali
+      ;;
+    help|--help|-h|"")
+      show_usage
+      ;;
+    *)
+      echo "Unknown command: $1" >&2
+      echo "" >&2
+      show_usage >&2
+      exit 1
+      ;;
+  esac
+fi
