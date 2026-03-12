@@ -2,6 +2,16 @@
 
 Provides an accessible "click-to-install" Kali Linux VM using a dockerized QEMU environment to minimize dependencies. Intended for [Omarchy](https://github.com/basecamp/omarchy), but should work on any Arch setup with `docker` engine set up. Supports clipboard-sharing + display auto-resizing on Hyprland. Includes windowrules for a smooth, borderless experience. Can integrate into walker menus alongside Omarchy's default Windows VM.
 
+##  Installation
+Available on the AUR:
+
+```sh
+yay -S omarchy-kali-vm
+```
+
+After installation you must run `omarchy-kali-vm-integrate-os` to import the Hyprland windowrules and Walker menu entries into your `~/.config`. This can easily be undone with `omarchy-kali-vm-unintegrate-os`.
+
+
 ## Summary
 Adds first-class Kali VM support to Omarchy via `omarchy-kali-vm`. Uses [`qemux/qemu`](https://github.com/qemus/qemu), a containerized QEMU environment, to minimize dependencies. The only external dependency required is `virt-viewer` for the SPICE display. Clipboard integration and desktop resizing are available out of the box.
 
